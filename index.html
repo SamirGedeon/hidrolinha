@@ -199,14 +199,16 @@ h3 { font-size: 17px; letter-spacing: -.025em; }
 }
 .theme-icon { width: 16px; height: 16px; flex: none; }
 .sun {
-  border-radius: 50%;
+  position: relative;
   background:
-    radial-gradient(circle, transparent 2px, currentColor 2.5px 4px, var(--theme-icon-mask) 4.5px 5px, transparent 5.5px),
-    linear-gradient(currentColor, currentColor) center / 1.5px 100% no-repeat,
-    linear-gradient(currentColor, currentColor) center / 100% 1.5px no-repeat;
+    linear-gradient(currentColor, currentColor) center top / 1.3px 2.5px no-repeat,
+    linear-gradient(currentColor, currentColor) center bottom / 1.3px 2.5px no-repeat,
+    linear-gradient(currentColor, currentColor) left center / 2.5px 1.3px no-repeat,
+    linear-gradient(currentColor, currentColor) right center / 2.5px 1.3px no-repeat;
 }
-.theme-choice { --theme-icon-mask: var(--surface-soft); }
-.theme-picker input:checked + span { --theme-icon-mask: var(--tint); }
+.sun::before, .sun::after { content: ""; position: absolute; }
+.sun::before { inset: 4px; border: 1.3px solid currentColor; border-radius: 50%; }
+.sun::after { inset: 0; background: inherit; transform: rotate(45deg); }
 .moon {
   width: 14px;
   height: 14px;
@@ -482,6 +484,13 @@ input[aria-invalid="true"] { border-color: var(--warning); }
   border-block: 1px solid var(--pipe);
   background: color-mix(in srgb, var(--pipe), var(--board-plot) 53%);
 }
+.route.interrupted .route-track::before {
+  top: 20px;
+  height: 2px;
+  border: 0;
+  background: repeating-linear-gradient(90deg, #6487a1 0 6px, transparent 6px 12px);
+}
+.route.interrupted .shower { background: var(--board-plot); border-style: dashed; }
 .flow-pulse { overflow: hidden; }
 .flow-pulse::before {
   content: "";
@@ -514,7 +523,9 @@ input[aria-invalid="true"] { border-color: var(--warning); }
   color: var(--board-ink);
   font-size: 12px;
 }
-.flow-button:hover { color: var(--pipe); border-color: var(--pipe); }
+.flow-button:hover:not(:disabled) { color: var(--pipe); border-color: var(--pipe); }
+.flow-button:disabled { background: var(--board-plot); border-color: var(--board-edge); color: var(--board-muted); opacity: 1; }
+.route-notice { margin-top: 7px; color: var(--board-muted); font-size: 13px; }
 .flow-button:focus-visible { outline-color: var(--pipe); }
 .play-icon {
   width: 9px;
@@ -1135,8 +1146,9 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
           </div>
           <div class="scheme-tools">
             <p class="route-hint" id="percurso-dica" hidden>Role o esquema para ver o percurso completo.</p>
-            <button class="flow-button" id="animar-percurso" type="button" aria-controls="percurso"><span class="play-icon" aria-hidden="true"></span>Animar percurso</button>
+            <button class="flow-button" id="animar-percurso" type="button" aria-controls="percurso" disabled><span class="play-icon" aria-hidden="true"></span>Animar percurso</button>
           </div>
+          <p id="percurso-aviso" class="route-notice" role="status" hidden></p>
           <div class="scheme-detail" id="detalhe" role="status" aria-atomic="true"></div>
         </section>
         <section class="totals" id="resumo" tabindex="-1" aria-labelledby="titulo-resumo">
@@ -3981,6 +3993,7 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
   const get = (id) => document.getElementById(id);
   const route = get('percurso');
   const track = get('percurso-trilha');
+  const flowButton = get('animar-percurso');
   const storageKey = 'hidrolinha-projeto-v1';
   const parts = table.componentes.filter((part) => part.unidade === 'un');
   const byId = new Map(parts.map((part) => [part.id, part]));
@@ -4154,7 +4167,25 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
       mark + '</span><span>' + escape(label) + '</span></button>';
   }
 
+  function flowBlockReason(missing) {
+    if (get('tubo').getAttribute('aria-invalid') === 'true') return 'Corrija a metragem do tubo para animar o percurso.';
+    if (missing.length) return 'Revise as peças sem valor para esta bitola para liberar o fluxo.';
+    if (state.tube === 0) return 'Informe um comprimento de tubo reto maior que zero para conectar o percurso.';
+    return '';
+  }
+
+  function updateFlowAvailability(missing = []) {
+    const reason = flowBlockReason(missing);
+    flowButton.disabled = Boolean(reason);
+    route.classList.toggle('interrupted', Boolean(reason));
+    const notice = get('percurso-aviso');
+    notice.hidden = !reason;
+    if (notice.textContent !== reason) notice.textContent = reason;
+    if (reason) track.querySelector('.flow-pulse')?.remove();
+  }
+
   function animateRoute(manual = false) {
+    if (flowButton.disabled) return;
     const previous = track.querySelector('.flow-pulse');
     if (previous) previous.remove();
     const pulse = document.createElement('span');
@@ -4241,6 +4272,7 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
   function renderCalculation(motion = '') {
     const snapshot = currentResult();
     if (selected === 'tube' ? state.tube === 0 : !snapshot.lines.some((line) => line.id === selected)) selected = '';
+    updateFlowAvailability(snapshot.missing);
     renderDiagram(snapshot.lines, motion);
     renderTotals(snapshot);
     renderMemo(snapshot, motion);
@@ -4317,6 +4349,7 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
     get('tubo-erro').textContent = valid ? '' : 'Informe um valor válido com até 4 casas decimais.';
     if (!valid) {
       get('pdf').disabled = true;
+      updateFlowAvailability();
       return;
     }
     state.tube = value;
@@ -4371,7 +4404,7 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
     }
   });
   get('exemplo').addEventListener('click', () => replaceProject(copyExample(), 'joelho-90|PVC', 'flow'));
-  get('animar-percurso').addEventListener('click', () => animateRoute(true));
+  flowButton.addEventListener('click', () => animateRoute(true));
   const resetDialog = get('dialogo-novo');
   get('novo').addEventListener('click', () => {
     if (!state.items.length && !state.tube && !state.project) {
