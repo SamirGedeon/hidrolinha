@@ -1183,14 +1183,14 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
     <form method="dialog">
       <span class="reset-mark" aria-hidden="true"></span>
       <h2 id="dialogo-novo-titulo">Iniciar um novo cálculo?</h2>
-      <p id="dialogo-novo-descricao">As peças, a metragem do tubo e o nome do projeto atual serão limpos.</p>
+      <p id="dialogo-novo-descricao"></p>
       <div class="reset-project" id="dialogo-novo-projeto" hidden>
         <span>Projeto atual</span>
         <strong id="dialogo-novo-nome"></strong>
       </div>
       <div class="reset-actions">
         <button class="button" type="submit" value="voltar" autofocus>Voltar ao projeto</button>
-        <button class="button primary" type="submit" value="limpar">Limpar e começar</button>
+        <button class="button primary" id="dialogo-novo-confirmar" type="submit"></button>
       </div>
     </form>
   </dialog>
@@ -3843,6 +3843,35 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
     return Number.isInteger(v) ? String(v) : v.toLocaleString('pt-BR', { maximumFractionDigits: 4 });
   }
 
+  function desenharNomeUnicode(doc, nome, x, y, largura) {
+    // A Helvetica embutida cobre WinAnsi. O canvas usa as fontes disponíveis no navegador.
+    var pixelsPorMm = 12;
+    var alturaLinha = 4.3;
+    var base = 4;
+    var fonte = (10 * 25.4 / 72 * pixelsPorMm) + 'px sans-serif';
+    var canvas = raiz.document.createElement('canvas');
+    canvas.width = Math.ceil(largura * pixelsPorMm);
+    var ctx = canvas.getContext('2d');
+    ctx.font = fonte;
+    var caracteres = typeof Intl.Segmenter === 'function'
+      ? Array.from(new Intl.Segmenter('pt-BR').segment(nome), function (parte) { return parte.segment; })
+      : Array.from(nome);
+    var linhas = [''];
+    caracteres.forEach(function (caractere) {
+      var ultima = linhas.length - 1;
+      if (ctx.measureText(linhas[ultima] + caractere).width > canvas.width - 2) linhas.push(caractere);
+      else linhas[ultima] += caractere;
+    });
+    canvas.height = Math.ceil((1.5 + base + (linhas.length - 1) * alturaLinha) * pixelsPorMm);
+    ctx.font = fonte;
+    ctx.fillStyle = 'rgb(30, 27, 25)';
+    linhas.forEach(function (linha, i) {
+      ctx.fillText(linha, 1, (base + i * alturaLinha) * pixelsPorMm);
+    });
+    doc.addImage(canvas, 'PNG', x, y - base, canvas.width / pixelsPorMm, canvas.height / pixelsPorMm);
+    return linhas.length;
+  }
+
   function gerar(op) {
     var jspdf = raiz.jspdf;
     if (!jspdf || !jspdf.jsPDF) { raiz.print(); return; }
@@ -3871,17 +3900,26 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
     doc.setTextColor(30, 27, 25);
     doc.setFontSize(10);
     var y = 37;
+    var nomeProjeto = op.projeto || '—';
     var info = [
-      ['Projeto / trecho', op.projeto || '—'],
+      ['Projeto / trecho', nomeProjeto],
       ['Diâmetro nominal', d.polegadas + '  (DN ' + d.dnMm + ' mm' + (d.dePvcMm ? ' · PVC soldável DE ' + d.dePvcMm + ' mm' : '') + ')'],
       ['Data', agora.toLocaleDateString('pt-BR') + ' ' + agora.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })],
       ['Fonte dos valores', op.tabela.fonte],
     ];
-    info.forEach(function (linha) {
+    info.forEach(function (linha, i) {
       doc.setFont('helvetica', 'bold'); doc.text(linha[0] + ':', margem, y);
-      doc.setFont('helvetica', 'normal'); var linhas = doc.splitTextToSize(String(linha[1]), largura - 2 * margem - 36);
-      doc.text(linhas, margem + 36, y);
-      y += 5.5 + (linhas.length - 1) * 4.3;
+      doc.setFont('helvetica', 'normal');
+      var larguraValor = largura - 2 * margem - 36;
+      var totalLinhas;
+      if (i === 0 && /[^\u0020-\u007E\u00A0-\u00FF€‚ƒ„…†‡ˆ‰Š‹ŒŽ‘’“”•–—˜™š›œžŸ]/u.test(nomeProjeto)) {
+        totalLinhas = desenharNomeUnicode(doc, nomeProjeto, margem + 36, y, larguraValor);
+      } else {
+        var linhas = doc.splitTextToSize(linha[1], larguraValor);
+        doc.text(linhas, margem + 36, y);
+        totalLinhas = linhas.length;
+      }
+      y += 5.5 + (totalLinhas - 1) * 4.3;
     });
 
     // Tabela de cálculo
@@ -3898,6 +3936,7 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
       margin: { left: margem, right: margem },
       head: [['Foto', 'Nº', 'Componente', 'Material', 'Quantidade', 'Comp. equivalente unitário (m)', 'Comprimento da linha (m)']],
       body: corpo,
+      showFoot: 'lastPage',
       foot: [
         [{ content: 'Total de acessórios (peças)', colSpan: 6 }, qtd(r.totalPecas)],
         [{ content: 'Soma das singularidades (conexões e válvulas)', colSpan: 6 }, num(r.totalSingularidades)],
@@ -4122,7 +4161,8 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
     const groups = categories.filter(([id]) => !category || id === category).map(([, title, types]) => {
       const cards = parts.filter((part) => types.includes(part.categoria)).map((part) => {
         const index = searchTerms(part);
-        const materials = (filter ? [filter] : Object.keys(part.materiais)).filter((material) =>
+        const materials = Object.keys(part.materiais).filter((material) =>
+          (!filter || material === filter) &&
           (!available || lookup(part, material) != null) &&
           terms.every((term) => (index + ' ' + normalize(material)).includes(term)));
         if (!materials.length) return '';
@@ -4142,10 +4182,11 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
       return { item, part, unit, id: key(item), total: unit == null ? null : calc.calcularItem(table, state.diameter, item).comprimentoTotal };
     });
     const missing = lines.filter(({ unit }) => unit == null);
+    const tube = get('tubo').getAttribute('aria-invalid') === 'true' ? null : state.tube;
     const items = [...state.items];
-    if (state.tube > 0) items.push({ componenteId: 'trecho-reto', material: 'PVC', quantidade: state.tube });
-    const result = missing.length ? null : calc.calcularSistema(table, state.diameter, items);
-    return { lines, missing, items, result };
+    if (tube > 0) items.push({ componenteId: 'trecho-reto', material: 'PVC', quantidade: tube });
+    const result = missing.length || tube === null ? null : calc.calcularSistema(table, state.diameter, items);
+    return { lines, missing, tube, items, result };
   }
 
   function cellReference(line) {
@@ -4167,15 +4208,15 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
       mark + '</span><span>' + escape(label) + '</span></button>';
   }
 
-  function flowBlockReason(missing) {
-    if (get('tubo').getAttribute('aria-invalid') === 'true') return 'Corrija a metragem do tubo para animar o percurso.';
+  function flowBlockReason({ missing, tube }) {
+    if (tube === null) return 'Corrija a metragem do tubo para animar o percurso.';
     if (missing.length) return 'Revise as peças sem valor para esta bitola para liberar o fluxo.';
-    if (state.tube === 0) return 'Informe um comprimento de tubo reto maior que zero para conectar o percurso.';
+    if (tube === 0) return 'Informe um comprimento de tubo reto maior que zero para conectar o percurso.';
     return '';
   }
 
-  function updateFlowAvailability(missing = []) {
-    const reason = flowBlockReason(missing);
+  function updateFlowAvailability(snapshot) {
+    const reason = flowBlockReason(snapshot);
     flowButton.disabled = Boolean(reason);
     route.classList.toggle('interrupted', Boolean(reason));
     const notice = get('percurso-aviso');
@@ -4195,10 +4236,10 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
     track.append(pulse);
   }
 
-  function renderDiagram(lines, motion) {
+  function renderDiagram({ lines, tube }, motion) {
     const groups = lines.map(({ item, part, id }) =>
       node(id, item.quantidade + '×', diagramName(part), item.quantidade + ' × ' + part.nome + ' (' + item.material + ')'));
-    if (state.tube > 0) groups.push(node('tube', 'm', 'Tubo reto', 'Tubo reto, ' + meters.format(state.tube) + ' metros'));
+    if (tube > 0) groups.push(node('tube', 'm', 'Tubo reto', 'Tubo reto, ' + meters.format(tube) + ' metros'));
     route.classList.toggle('signal-piece', motion === 'selection' || motion === 'adjustment');
     track.style.setProperty('--node-count', String(groups.length + 2));
     track.innerHTML = '<span class="node endpoint"><span class="node-mark tank" aria-hidden="true"></span>Caixa-d’água</span>' +
@@ -4215,16 +4256,16 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
           meters.format(active.total) + ' m</span></div><code class="cell-ref"><span class="sr-only">Célula </span>' +
           cellReference(active) + '</code>';
     }
-    if (selected === 'tube' && state.tube > 0) {
+    if (selected === 'tube' && tube > 0) {
       detail = '<div class="detail-value"><strong>Tubo reto</strong><span>' +
-        meters.format(state.tube) + ' m de comprimento real informado.</span></div>';
+        meters.format(tube) + ' m de comprimento real informado.</span></div>';
     }
     const readout = get('detalhe');
     readout.classList.toggle('feedback', motion === 'selection' || motion === 'adjustment');
     if (readout.innerHTML !== detail) readout.innerHTML = detail;
   }
 
-  function renderTotals({ result, missing }) {
+  function renderTotals({ result, missing, tube }) {
     const value = result ? meters.format(result.comprimentoEquivalenteTotal) : '—';
     const totalMarkup = '<span class="reading">' + value + (result ? ' <small>m</small>' : '') + '</span>';
     if (get('total').innerHTML !== totalMarkup) get('total').innerHTML = totalMarkup;
@@ -4234,20 +4275,21 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
       mobileTotal.innerHTML = '<span class="reading">' + mobileValue + '</span>';
     }
     get('soma-pecas').textContent = result ? meters.format(result.totalSingularidades) + ' m' : '—';
-    get('soma-tubo').textContent = meters.format(state.tube) + ' m';
+    get('soma-tubo').textContent = tube === null ? '—' : meters.format(tube) + ' m';
     get('proporcao').hidden = !result?.comprimentoEquivalenteTotal;
     if (result?.comprimentoEquivalenteTotal) {
       const share = result.totalSingularidades / result.comprimentoEquivalenteTotal;
       get('proporcao').firstElementChild.style.transform = 'scaleX(' + share + ')';
     }
-    get('indisponivel').hidden = missing.length === 0;
-    get('indisponivel').textContent = missing.length
+    const warning = tube === null ? 'Corrija a metragem do tubo para concluir o cálculo.' : missing.length
       ? 'Há peças sem valor para esta bitola. Troque o diâmetro ou remova os itens sinalizados para concluir o cálculo.' : '';
+    get('indisponivel').hidden = !warning;
+    if (get('indisponivel').textContent !== warning) get('indisponivel').textContent = warning;
   }
 
-  function renderMemo({ lines, result, items }, motion) {
-    get('memorial-vazio').hidden = lines.length > 0 || state.tube > 0;
-    get('pdf').disabled = !result || items.length === 0 || get('tubo').getAttribute('aria-invalid') === 'true';
+  function renderMemo({ lines, result, items, tube }, motion) {
+    get('memorial-vazio').hidden = lines.length > 0 || tube !== 0;
+    get('pdf').disabled = !result || items.length === 0;
     const rows = lines.map(({ item, part, unit, id, total }) => {
       const label = escape(part.nome + ' em ' + item.material);
       const subtitle = item.material + ' · ' + (unit == null ? 'Sem valor tabelado' : meters.format(unit) + ' m/peça');
@@ -4259,21 +4301,21 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
         '<span>' + item.quantidade + '</span><button type="button" data-step="1" data-item="' + id + '" aria-label="Aumentar quantidade de ' + label + '">+</button></div>' +
         '<strong class="line-total">' + (total == null ? '—' : meters.format(total) + ' m') + '</strong></li>';
     });
-    if (state.tube > 0) {
+    if (tube > 0) {
       const highlight = selected === 'tube' ? ' active' + (motion ? ' feedback' : '') : '';
       rows.push('<li class="memo-row' + highlight +
         '"><button type="button" class="row-name" data-select="tube" aria-pressed="' + (selected === 'tube') +
         '">Tubo reto<small>Comprimento real</small></button><span></span><strong class="line-total">' +
-        meters.format(state.tube) + ' m</strong></li>');
+        meters.format(tube) + ' m</strong></li>');
     }
     get('memorial').innerHTML = rows.join('');
   }
 
   function renderCalculation(motion = '') {
     const snapshot = currentResult();
-    if (selected === 'tube' ? state.tube === 0 : !snapshot.lines.some((line) => line.id === selected)) selected = '';
-    updateFlowAvailability(snapshot.missing);
-    renderDiagram(snapshot.lines, motion);
+    if (selected === 'tube' ? !snapshot.tube : !snapshot.lines.some((line) => line.id === selected)) selected = '';
+    updateFlowAvailability(snapshot);
+    renderDiagram(snapshot, motion);
     renderTotals(snapshot);
     renderMemo(snapshot, motion);
     save();
@@ -4347,12 +4389,7 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
     const valid = Number.isFinite(value) && value >= 0 && value <= 999999999 && /^\s*\d*(?:[.,]\d{0,4})?\s*$/.test(input.value);
     input.setAttribute('aria-invalid', String(!valid));
     get('tubo-erro').textContent = valid ? '' : 'Informe um valor válido com até 4 casas decimais.';
-    if (!valid) {
-      get('pdf').disabled = true;
-      updateFlowAvailability();
-      return;
-    }
-    state.tube = value;
+    if (valid) state.tube = value;
     renderCalculation();
   });
   get('projeto').addEventListener('input', (event) => {
@@ -4403,28 +4440,44 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
       next.focus({ preventScroll: true });
     }
   });
-  get('exemplo').addEventListener('click', () => replaceProject(copyExample(), 'joelho-90|PVC', 'flow'));
+  function loadExample() {
+    replaceProject(copyExample(), 'joelho-90|PVC', 'flow');
+  }
+
   flowButton.addEventListener('click', () => animateRoute(true));
   const resetDialog = get('dialogo-novo');
-  get('novo').addEventListener('click', () => {
-    if (!state.items.length && !state.tube && !state.project) {
-      resetProject();
+  function confirmProjectChange(action) {
+    const loadingExample = action === 'carregar';
+    if (!state.items.length && !state.tube && !state.project && get('tubo').getAttribute('aria-invalid') !== 'true') {
+      if (loadingExample) loadExample();
+      else resetProject();
       return;
     }
     const projectName = state.project.trim();
     get('dialogo-novo-projeto').hidden = !projectName;
     get('dialogo-novo-nome').textContent = projectName;
+    get('dialogo-novo-titulo').textContent = loadingExample ? 'Carregar o exercício da aula?' : 'Iniciar um novo cálculo?';
+    get('dialogo-novo-descricao').textContent = loadingExample
+      ? 'O exercício substituirá as peças, a metragem do tubo e o nome do projeto atual.'
+      : 'As peças, a metragem do tubo e o nome do projeto atual serão limpos.';
+    const confirm = get('dialogo-novo-confirmar');
+    confirm.value = action;
+    confirm.textContent = loadingExample ? 'Substituir e carregar' : 'Limpar e começar';
     resetDialog.returnValue = '';
     resetDialog.showModal();
-  });
+  }
+
+  get('exemplo').addEventListener('click', () => confirmProjectChange('carregar'));
+  get('novo').addEventListener('click', () => confirmProjectChange('limpar'));
   resetDialog.addEventListener('close', () => {
     if (resetDialog.returnValue === 'limpar') resetProject();
+    if (resetDialog.returnValue === 'carregar') loadExample();
   });
   get('pdf').addEventListener('click', () => {
-    const { result, items } = currentResult();
-    if (!result || !items.length || get('tubo').getAttribute('aria-invalid') === 'true') return;
+    const { result, items, tube } = currentResult();
+    if (!result || !items.length) return;
     const purchases = calc.listaDeCompras(table, state.diameter, state.items);
-    if (state.tube > 0) purchases.push({ descricao: 'Tubo reto ' + state.diameter, quantidade: state.tube, unidade: 'm' });
+    if (tube > 0) purchases.push({ descricao: 'Tubo reto ' + state.diameter, quantidade: tube, unidade: 'm' });
     window.RelatorioPDF.gerar({ tabela: table, resultado: result, compras: purchases, projeto: state.project, fotos: photos });
   });
 
